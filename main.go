@@ -2,7 +2,7 @@ package main
 
 import (
 	"log"
-	"time"
+	"sync"
 )
 
 func gen(nums ...int) <-chan int {
@@ -18,29 +18,45 @@ func gen(nums ...int) <-chan int {
 	return input
 }
 
-func sq(in <-chan int) <-chan int {
+func sq(workerId int, in <-chan int) <-chan int {
 	results := make(chan int)
 	go func() {
 		for num := range in {
-			log.Printf("sq: processing %v", num)
+			log.Printf("sq(%v): processing %v", workerId, num)
 			results <- num * num
 		}
-		log.Println("sq: closing results chan")
+		log.Printf("sq(%v): closing results chan", workerId)
 		close(results)
 	}()
 	return results
 }
 
-func add(in <-chan int) <-chan int {
+func mergeOutputs(outChans ...<-chan int) <-chan int {
+	wg := new(sync.WaitGroup)
 	results := make(chan int)
-	go func() {
-		for num := range in {
-			log.Printf("add: processing %v", num)
-			results <- num + num
+
+	// anonymous function to read from each output chan in arguments
+	consume := func(out <-chan int) {
+		for num := range out {
+			results <- num
 		}
-		log.Println("add: closing results chan")
+		wg.Done()
+	}
+
+	// wait to read from all the channels
+	wg.Add(len(outChans))
+	for _, outChan := range outChans {
+		// fan-in all the outputs!
+		go consume(outChan)
+	}
+
+	// Request a gopher to close results chan after all the output goroutines are
+	// done
+	go func() {
+		wg.Wait()
 		close(results)
 	}()
+
 	return results
 }
 
@@ -50,11 +66,17 @@ func main() {
 	nums := []int{1, 2, 3}
 	log.Println("input: ", nums)
 
-	results := add(sq(gen(nums...)))
+	in := gen(nums...)
+	// fan-out: request (be nice to them) 2 gophers to process the input
+	firstGopherOutputs := sq(1, in)
+	secondGopherOutputs := sq(2, in)
 
-	for i := 0; i < len(nums); i++ {
-		log.Printf("results[%v]: %v", i, <-results)
+	// fan-in: combine outputs from the 2 gophers onto 1 output channel
+	// 'r' can be the result from either the 1st or 2nd gopher. Order is not
+	// guaranteed
+	for r := range mergeOutputs(firstGopherOutputs, secondGopherOutputs) {
+		log.Printf("result: %v", r)
 	}
 
-	time.Sleep(2 * time.Second)
+	log.Printf("Done with loops")
 }
